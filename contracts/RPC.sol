@@ -92,8 +92,8 @@ contract RPC is Ownable, Pausable{
         require(_plainMove>0 && _plainMove<4,"Submit a move between 1 and 3");
         Game memory _game = games[_hashedMove];
         require(_game.player1 != address(0),"You can not join a finished game");
+        require(_game.player2 == msg.sender,"You are not the opponent");
         emit LogEnrollPlayer2(msg.sender,_game.player1,_plainMove,_hashedMove,msg.value);
-        _game.player2 = msg.sender;
         _game.P2PlainMove = _plainMove;
         _game.GameDeadline = block.number.add(minGameDeadline);
         games[_hashedMove] = _game;
