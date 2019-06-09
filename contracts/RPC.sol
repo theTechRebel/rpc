@@ -10,46 +10,40 @@ contract RPC is Ownable, Pausable{
     event LogContractDeath(address indexed sender);
     event LogSetAmount(address indexed sender, uint indexed amount);
     event LogSetMinDeadline(address indexed sender, uint indexed minDeadline);
-    event LogEnrollPlayer1(address indexed player1,address indexed player2,
-    bytes32 hashedMove,uint deadline,uint game, uint indexed amount);
+    event LogEnrollPlayer1(address indexed player1,
+    bytes32 hashedMove,uint deadline,uint indexed amount);
     event LogEnrollPlayer2(address indexed player2,address indexed player1,
-    uint move,uint game, uint indexed amount);
-    event LogWinner(uint game,address indexed winner, address indexed loser,uint indexed amount);
-    event LogDraw(uint indexed game,address indexed player1,uint amountToPlayer1,
+    uint plainMove,bytes32 hashedMove, uint indexed amount);
+    event LogWinner(bytes32 hashedMove,address indexed winner, address indexed loser,uint indexed amount);
+    event LogDraw(bytes32 indexed hashedMove,address indexed player1,uint amountToPlayer1,
      address indexed player2,uint amountToPlayer2);
-     event LogQuit(uint indexed game,address indexed player1,uint amountToPlayer1,
+     event LogQuit(bytes32 indexed hashedMove,address indexed player1,uint amountToPlayer1,
      address indexed player2,uint amountToPlayer2);
      event LogWithdrawal(address indexed withdrawer, uint indexed amount);
 
     struct Game{
-        address player1;
-        address player2;
-        uint amount1;
-        uint amount2;
-        bytes32 hashedMove;
-        uint move;
-        uint deadline;
+        address player1; //player 1 address
+        address player2; //player 2 address
+        uint P1BetAmount; //amount deposited by player 1
+        uint P2BetAmount; //amount deposited by player 2
+        bytes32 P1HashedMove; //hashed move for player 1 so that player 2 does not know what it was
+        uint P2PlainMove; //plain move for player 2 no need to hash because its the last move of the game
+        uint GameDeadline; //deadline time for game to expire
     }
-    enum moves {noMove,rock,paper,scissors}
-    mapping(uint=>Game)  private games;
-    mapping(address=>uint) private winnings;
-    uint public amount;
-    uint public gameCount;
-    uint public minDeadline;
-    bool private killed;
+    enum moves {noMove,rock,paper,scissors} //options to play are rock, paper & scissors. O is NoMove
+    mapping(bytes32=>Game)  private games; //holds the games plaid using P1 hash move
+    mapping(address=>uint) private winnings; //holds player winnings
+    uint public gameAmount; //amount required to play the game, to be deposited by each player
+    uint public minGameDeadline; //holds the minimum time required to be set as deadline
+    bool private killed; //determine if contract is killed
 
     constructor(uint _amount, uint _minDeadline) public{
-        minDeadline = _minDeadline;
-        amount = _amount;
+        minGameDeadline = _minDeadline;
+        gameAmount = _amount;
     }
     modifier ifAlive(){
                 require(!killed,"Contract is dead");
                 _;
-    }
-    modifier  validateGameCount(uint _gameCount) {
-        require(_gameCount>0,"Supply a valid game number");
-        require(_gameCount<=gameCount,"This game has not been played yet");
-        _;
     }
     function getHash(bytes32 secret,uint move,address player)public view returns(bytes32 hash){
         require(secret!=0,"provide a valid secret");
@@ -70,97 +64,115 @@ contract RPC is Ownable, Pausable{
         killed = true;
         emit LogContractDeath(msg.sender);
     }
-    function setAmount(uint _amount) public onlyOwner{
-        amount = _amount;
+    function setGameAmount(uint _amount) public onlyOwner{
+        gameAmount = _amount;
         emit LogSetAmount(msg.sender,_amount);
     }
-    function setMinDeadline(uint _minDeadline) public onlyOwner{
-        minDeadline = _minDeadline;
+    function setGameMinDeadline(uint _minDeadline) public onlyOwner{
+        minGameDeadline = _minDeadline;
         emit LogSetMinDeadline(msg.sender,_minDeadline);
     }
-    function enrollPlayer1(uint _deadline,bytes32 _hashedMove,address _opponent)
-    public payable whenNotPaused ifAlive returns(uint _gameCount){
-        require(msg.value==amount,"Deposit the right amount to play");
+    //to play, player1 submits:
+        //deadline in blocks, bytes32 hash as move
+    function enrollPlayer1(uint _deadline,bytes32 _hashedMove)
+    public payable whenNotPaused ifAlive {
+        require(msg.value==gameAmount,"Deposit the right amount to play");
         require(_hashedMove != 0, "Submit a valid move");
-        require(_opponent != address(0), "Submit a valid opponent");
-        require(_deadline >= minDeadline,"Deadline must be more than min deadline");
-        _gameCount = gameCount++;
-        emit LogEnrollPlayer1(msg.sender,_opponent,_hashedMove,_deadline,_gameCount,msg.value);
-        Game memory _game = games[_gameCount];
+        require(_deadline >= minGameDeadline,"Deadline must be more than min deadline");
+        Game memory _game = games[_hashedMove];
+        require(_game.P1HashedMove == 0,"This hash has already been used");
+        emit LogEnrollPlayer1(msg.sender,_hashedMove,_deadline,msg.value);
         _game.player1 = msg.sender;
-        _game.amount1.add(msg.value);
-        _game.hashedMove = _hashedMove;
-        _game.player2 = _opponent;
-        _game.deadline = block.number.add(_deadline);
-        games[_gameCount] = _game;
+        _game.P1BetAmount.add(msg.value);
+        _game.P1HashedMove = _hashedMove;
+        _game.GameDeadline = block.number.add(_deadline);
+        games[_hashedMove] = _game;
     }
-    function enrollPlayer2(uint _gameCount, uint _move)
-    public payable whenNotPaused ifAlive validateGameCount(_gameCount){
-        require(msg.value==amount,"Deposit the right amount to play");
-        require(_move>0 && _move<4,"Submit a move between 1 and 3");
-        Game memory _game = games[_gameCount];
+    //to play, player2 submits:
+        //the hashed move from p1 and thier own plain move and gameAmount
+    function enrollPlayer2(bytes32 _hashedMove, uint _plainMove)
+    public payable whenNotPaused ifAlive{
+        require(msg.value==gameAmount,"Deposit the right amount to play");
+        require(_plainMove>0 && _plainMove<4,"Submit a move between 1 and 3");
+        Game memory _game = games[_hashedMove];
         require(_game.player1 != address(0),"You can not join a finished game");
-        require(_game.player2 == msg.sender,"You are not allowed to play this game");
-        emit LogEnrollPlayer2(msg.sender,_game.player1,_move,_gameCount,msg.value);
-        _game.amount2.add(msg.value);
-        _game.move = _move;
-        games[_gameCount] = _game;
+        emit LogEnrollPlayer2(msg.sender,_game.player1,_plainMove,_hashedMove,msg.value);
+        _game.P2BetAmount.add(msg.value);
+        _game.player2 = msg.sender;
+        _game.P2PlainMove = _plainMove;
+        _game.GameDeadline = 0;
+        games[_hashedMove] = _game;
     }
-    function determineWinner(uint _gameCount,uint _move,bytes32 _secret)
-    public whenNotPaused ifAlive validateGameCount(_gameCount){
-        require(_secret!=0,"provide a valid secret");
-        require(_move>0 && _move<4,"Submit a move between 1 and 3");
-        Game memory _game = games[_gameCount];
+    //to determine winner
+        //supply hash, p1 plain move and secret
+    function revealPlayer1Move(bytes32 _p1Hash,uint _P1Plainmove,bytes32 _P1secret)
+    public whenNotPaused ifAlive{
+        require(_P1secret!=0,"provide a valid secret");
+        require(_P1Plainmove>0 && _P1Plainmove<4,"Submit a move between 1 and 3");
+        Game memory _game = games[_p1Hash];
         require(_game.player1==msg.sender || _game.player2==msg.sender,
         "You are not either of the players of this game");
-        require(_game.move>0,"Player 2 has not played yet");
-        require(_game.hashedMove == getHash(_secret,_move,msg.sender),"Wrong secret or move submitted");
-        uint _winnings = _game.amount1.add(_game.amount2);
-        uint winner = whoWon(_move,_game.move);
+        require(_game.P2PlainMove>0,"Player 2 has not played yet");
+        require(_game.P1HashedMove == getHash(_P1secret,_P1Plainmove,msg.sender),"Wrong secret or move submitted");
+        uint _winnings = _game.P1BetAmount.add(_game.P2BetAmount);
+        uint winner = whoWon(_P1Plainmove,_game.P2PlainMove);
         if(winner == 1){
             winnings[_game.player1].add(_winnings);
-            emit LogWinner(_gameCount,_game.player1,
+            emit LogWinner(_p1Hash,_game.player1,
             _game.player2,_winnings);
         }else if(winner == 2){
             winnings[_game.player2].add(_winnings);
-            emit LogWinner(_gameCount,_game.player2,
+            emit LogWinner(_p1Hash,_game.player2,
             _game.player1,_winnings);
         }else{
-             winnings[_game.player1].add(_game.amount1);
-             winnings[_game.player2].add(_game.amount2);
-             emit LogDraw(_gameCount,_game.player1,_game.amount1,
-            _game.player2,_game.amount2);
+             winnings[_game.player1].add(_game.P1BetAmount);
+             winnings[_game.player2].add(_game.P2BetAmount);
+             emit LogDraw(_p1Hash,_game.player1,_game.P1BetAmount,
+            _game.player2,_game.P2BetAmount);
         }
-        _game.amount1 = 0;
-        _game.amount2 = 0;
+        _game.P1BetAmount = 0;
+        _game.P2BetAmount = 0;
         _game.player1 = address(0);
         _game.player2 = address(0);
-        _game.move = 0;
-        _game.hashedMove = 0;
-        _game.deadline = 0;
-        games[_gameCount] = _game;
+        _game.P2PlainMove = 0;
+        games[_p1Hash] = _game;
     }
-    function quit(uint _gameCount)
-    public whenNotPaused ifAlive validateGameCount(_gameCount){
-        Game memory _game = games[_gameCount];
-        require(_game.deadline>block.number,"Deadline for quit has not been reached");
+    //in order to quit:
+    /*
+        player1 can cancel the game if:
+        a. player2 didn't submit their plainMove2
+        b. We passed the deadline
+        player2 can cancel the game if:
+        a. player2 submitted their plainMove2
+        b. player1 didn't reveal their move
+        c. We passed the deadline (please note that you need to reset the deadline of the game when player2 submit their plainMove2)
+    */
+    function quit(bytes32 _p1Hash)
+    public whenNotPaused ifAlive{
+        Game memory _game = games[_p1Hash];
         require(_game.player1==msg.sender || _game.player2==msg.sender,
         "You are not either of the players of this game");
-        winnings[_game.player1].add(_game.amount1);
-        winnings[_game.player2].add(_game.amount2);
-        emit LogQuit(_gameCount,_game.player1,_game.amount1,
-            _game.player2,_game.amount2);
-        _game.amount1 = 0;
-        _game.amount2 = 0;
+        require(block.number>_game.GameDeadline||_game.GameDeadline==0,"This game has not yet expired");
+        if(msg.sender == _game.player1){
+            require(_game.P2PlainMove == 0,"Player 2 submited a move");
+        }else{
+            require(_game.P2PlainMove!=0,"Player 2 has not yet submitted a move");
+        }
+        winnings[_game.player1].add(_game.P1BetAmount);
+        winnings[_game.player2].add(_game.P2BetAmount);
+        emit LogQuit(_p1Hash,_game.player1,_game.P1BetAmount,
+            _game.player2,_game.P2BetAmount);
+        _game.P1BetAmount = 0;
+        _game.P2BetAmount = 0;
         _game.player1 = address(0);
         _game.player2 = address(0);
-        _game.move = 0;
-        _game.hashedMove = 0;
-        _game.deadline = 0;
-        games[_gameCount] = _game;
+        _game.P2PlainMove = 0;
+        _game.P1HashedMove = 0;
+        _game.GameDeadline = 0;
+        games[_p1Hash] = _game;
     }
-    function withdraw(uint _gameCount)
-    public whenNotPaused ifAlive validateGameCount(_gameCount){
+    function withdraw()
+    public whenNotPaused ifAlive{
         uint _amount = winnings[msg.sender];
         require(_amount>0,"You have no winnings");
         emit LogWithdrawal(msg.sender,_amount);
