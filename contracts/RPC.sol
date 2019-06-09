@@ -11,7 +11,7 @@ contract RPC is Ownable, Pausable{
     event LogSetAmount(address indexed sender, uint indexed amount);
     event LogSetMinDeadline(address indexed sender, uint indexed minDeadline);
     event LogEnrollPlayer1(address indexed player1,
-    bytes32 hashedMove,uint deadline,uint indexed amount);
+    address indexed player2,bytes32 hashedMove,uint deadline,uint indexed amount);
     event LogEnrollPlayer2(address indexed player2,address indexed player1,
     uint plainMove,bytes32 hashedMove, uint indexed amount);
     event LogWinner(bytes32 hashedMove,address indexed winner, address indexed loser,uint indexed amount);
@@ -73,18 +73,15 @@ contract RPC is Ownable, Pausable{
     }
     //to play, player1 submits:
         //deadline in blocks, bytes32 hash as move
-    function enrollPlayer1(uint _deadline,bytes32 _hashedMove)
+    function enrollPlayer1(uint _deadline,bytes32 _hashedMove,address _opponent)
     public payable whenNotPaused ifAlive {
         require(msg.value==gameAmount,"Deposit the right amount to play");
         require(_hashedMove != 0, "Submit a valid move");
+        require(_opponent != address(0), "Submit a valid opponent address");
         require(_deadline >= minGameDeadline,"Deadline must be more than min deadline");
-        Game memory _game = games[_hashedMove];
-        require(_game.P1HashedMove == 0,"This hash has already been used");
-        emit LogEnrollPlayer1(msg.sender,_hashedMove,_deadline,msg.value);
-        _game.player1 = msg.sender;
-        _game.betAmount = msg.value;
-        _game.P1HashedMove = _hashedMove;
-        _game.GameDeadline = block.number.add(_deadline);
+        require(games[_hashedMove].P1HashedMove == 0,"This hash has already been used");
+        Game memory _game = Game(msg.sender, _opponent, msg.value, _hashedMove, 0, block.number.add(_deadline));
+        emit LogEnrollPlayer1(msg.sender,_opponent,_hashedMove,_deadline,msg.value);
         games[_hashedMove] = _game;
     }
     //to play, player2 submits:
@@ -96,10 +93,9 @@ contract RPC is Ownable, Pausable{
         Game memory _game = games[_hashedMove];
         require(_game.player1 != address(0),"You can not join a finished game");
         emit LogEnrollPlayer2(msg.sender,_game.player1,_plainMove,_hashedMove,msg.value);
-        _game.betAmount.add(msg.value);
         _game.player2 = msg.sender;
         _game.P2PlainMove = _plainMove;
-        _game.GameDeadline = 0;
+        _game.GameDeadline = block.number.add(minGameDeadline);
         games[_hashedMove] = _game;
     }
     //to determine winner
@@ -114,18 +110,18 @@ contract RPC is Ownable, Pausable{
         require(_game.P1HashedMove == getHash(_P1secret,_P1Plainmove,msg.sender),"Wrong secret or move submitted");
         uint winner = whoWon(_P1Plainmove,_game.P2PlainMove);
         if(winner == 1){
-            winnings[_game.player1].add(_game.betAmount);
+            winnings[_game.player1] = winnings[_game.player1].add(_game.betAmount.mul(2));
             emit LogWinner(_p1Hash,_game.player1,
             _game.player2,_game.betAmount);
         }else if(winner == 2){
-            winnings[_game.player2].add(_game.betAmount);
+            winnings[_game.player2] = winnings[_game.player2].add(_game.betAmount.mul(2));
             emit LogWinner(_p1Hash,_game.player2,
             _game.player1,_game.betAmount);
         }else{
-             winnings[_game.player1].add(_game.betAmount.div(2));
-             winnings[_game.player2].add(_game.betAmount.div(2));
-             emit LogDraw(_p1Hash,_game.player1,_game.betAmount.div(2),
-            _game.player2,_game.betAmount.div(2));
+             winnings[_game.player1] = winnings[_game.player1].add(_game.betAmount);
+             winnings[_game.player2] = winnings[_game.player2].add(_game.betAmount);
+             emit LogDraw(_p1Hash,_game.player1,_game.betAmount,
+            _game.player2,_game.betAmount);
         }
         _game.betAmount = 0;
         _game.player1 = address(0);
@@ -145,14 +141,12 @@ contract RPC is Ownable, Pausable{
         require(_game.player1==msg.sender,"You are not player 1");
         require(block.number>_game.GameDeadline,"This game has not yet expired");
         require(_game.P2PlainMove == 0,"Player 2 submited a move");
-        winnings[_game.player1].add(_game.betAmount.div(2));
-        winnings[_game.player2].add(_game.betAmount.div(2));
-        emit LogQuit(_p1Hash,_game.player1,_game.betAmount.div(2),
-            _game.player2,_game.betAmount.div(2));
+        winnings[_game.player1] = winnings[_game.player1].add(_game.betAmount);
+        emit LogQuit(_p1Hash,_game.player1,_game.betAmount,
+            _game.player2,0);
         _game.betAmount = 0;
         _game.player1 = address(0);
         _game.player2 = address(0);
-        _game.P2PlainMove = 0;
         _game.GameDeadline = 0;
         games[_p1Hash] = _game;
     }
@@ -167,12 +161,11 @@ contract RPC is Ownable, Pausable{
         Game memory _game = games[_p1Hash];
         require(_game.player2==msg.sender,
         "You are not player 2");
-        require(_game.GameDeadline==0,"Player 2 did not submit move");
         require(_game.P2PlainMove!=0,"Player 2 did not submit move");
-        winnings[_game.player1].add(_game.betAmount.div(2));
-        winnings[_game.player2].add(_game.betAmount.div(2));
-        emit LogQuit(_p1Hash,_game.player1,_game.betAmount.div(2),
-            _game.player2,_game.betAmount.div(2));
+        require(block.number>_game.GameDeadline,"The game has not expired");
+        winnings[_game.player2] = winnings[_game.player2].add(_game.betAmount.mul(2));
+        emit LogQuit(_p1Hash,_game.player1,0,
+            _game.player2,_game.betAmount);
         _game.betAmount = 0;
         _game.player1 = address(0);
         _game.player2 = address(0);
