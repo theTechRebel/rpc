@@ -80,9 +80,12 @@ contract RPC is Ownable, Pausable{
         require(_opponent != address(0), "Submit a valid opponent address");
         require(_deadline >= minGameDeadline,"Deadline must be more than min deadline");
         require(games[_hashedMove].P1HashedMove == 0,"This hash has already been used");
-        Game memory _game = Game(msg.sender, _opponent, msg.value, _hashedMove, 0, block.number.add(_deadline));
         emit LogEnrollPlayer1(msg.sender,_opponent,_hashedMove,_deadline,msg.value);
-        games[_hashedMove] = _game;
+        games[_hashedMove].player1 = msg.sender;
+        games[_hashedMove].player2 = _opponent;
+        games[_hashedMove].betAmount = msg.value;
+        games[_hashedMove].P1HashedMove = _hashedMove;
+        games[_hashedMove].GameDeadline = block.number.add(_deadline);
     }
     //to play, player2 submits:
         //the hashed move from p1 and thier own plain move and gameAmount
@@ -90,13 +93,12 @@ contract RPC is Ownable, Pausable{
     public payable whenNotPaused ifAlive{
         require(msg.value==gameAmount,"Deposit the right amount to play");
         require(_plainMove>0 && _plainMove<4,"Submit a move between 1 and 3");
-        Game memory _game = games[_hashedMove];
-        require(_game.player1 != address(0),"You can not join a finished game");
-        require(_game.player2 == msg.sender,"You are not the opponent");
-        emit LogEnrollPlayer2(msg.sender,_game.player1,_plainMove,_hashedMove,msg.value);
-        _game.P2PlainMove = _plainMove;
-        _game.GameDeadline = block.number.add(minGameDeadline);
-        games[_hashedMove] = _game;
+        address _player1 = games[_hashedMove].player1;
+        require(_player1!=address(0),"You can not join a finished game");
+        require(games[_hashedMove].player2==msg.sender,"You are not the opponent");
+        emit LogEnrollPlayer2(msg.sender,_player1,_plainMove,_hashedMove,msg.value);
+        games[_hashedMove].P2PlainMove = _plainMove;
+        games[_hashedMove].GameDeadline = block.number.add(minGameDeadline);
     }
     //to determine winner
         //supply hash, p1 plain move and secret
@@ -104,30 +106,34 @@ contract RPC is Ownable, Pausable{
     public whenNotPaused ifAlive{
         require(_P1secret!=0,"provide a valid secret");
         require(_P1Plainmove>0 && _P1Plainmove<4,"Submit a move between 1 and 3");
-        Game memory _game = games[_p1Hash];
-        require(_game.player1==msg.sender,"You are not player 1");
-        require(_game.P2PlainMove>0,"Player 2 has not played yet");
-        require(_game.P1HashedMove == getHash(_P1secret,_P1Plainmove,msg.sender),"Wrong secret or move submitted");
-        uint winner = whoWon(_P1Plainmove,_game.P2PlainMove);
+        address _player1 = games[_p1Hash].player1;
+        address _player2 = games[_p1Hash].player2;
+        uint _p2PlainMove = games[_p1Hash].P2PlainMove;
+        bytes32 _p1hashedMove = games[_p1Hash].P1HashedMove;
+        uint betAmount = games[_p1Hash].betAmount;
+        require(_player1==msg.sender,"You are not player 1");
+        require(_p2PlainMove>0,"Player 2 has not played yet");
+        require(_p1hashedMove == getHash(_P1secret,_P1Plainmove,msg.sender),"Wrong secret or move submitted");
+        uint winner = whoWon(_P1Plainmove,_p2PlainMove);
         if(winner == 1){
-            winnings[_game.player1] = winnings[_game.player1].add(_game.betAmount.mul(2));
-            emit LogWinner(_p1Hash,_game.player1,
-            _game.player2,_game.betAmount);
+            winnings[_player1] = winnings[_player1].add(betAmount.mul(2));
+            emit LogWinner(_p1Hash,_player1,
+            _player2,betAmount.mul(2));
         }else if(winner == 2){
-            winnings[_game.player2] = winnings[_game.player2].add(_game.betAmount.mul(2));
-            emit LogWinner(_p1Hash,_game.player2,
-            _game.player1,_game.betAmount);
+            winnings[_player2] = winnings[_player2].add(betAmount.mul(2));
+            emit LogWinner(_p1Hash,_player2,
+            _player1,betAmount.mul(2));
         }else{
-             winnings[_game.player1] = winnings[_game.player1].add(_game.betAmount);
-             winnings[_game.player2] = winnings[_game.player2].add(_game.betAmount);
-             emit LogDraw(_p1Hash,_game.player1,_game.betAmount,
-            _game.player2,_game.betAmount);
+             winnings[_player1] = winnings[_player1].add(betAmount);
+             winnings[_player2] = winnings[_player2].add(betAmount);
+             emit LogDraw(_p1Hash,_player1,betAmount,
+            _player2,betAmount);
         }
-        _game.betAmount = 0;
-        _game.player1 = address(0);
-        _game.player2 = address(0);
-        _game.P2PlainMove = 0;
-        games[_p1Hash] = _game;
+        games[_p1Hash].betAmount = 0;
+        games[_p1Hash].player1 = address(0);
+        games[_p1Hash].player2 = address(0);
+        games[_p1Hash].P2PlainMove = 0;
+        games[_p1Hash].GameDeadline = 0;
     }
     //in order to quit:
     /*
@@ -137,18 +143,19 @@ contract RPC is Ownable, Pausable{
     */
     function quitPlayer1(bytes32 _p1Hash)
     public whenNotPaused ifAlive{
-        Game memory _game = games[_p1Hash];
-        require(_game.player1==msg.sender,"You are not player 1");
-        require(block.number>_game.GameDeadline,"This game has not yet expired");
-        require(_game.P2PlainMove == 0,"Player 2 submited a move");
-        winnings[_game.player1] = winnings[_game.player1].add(_game.betAmount);
-        emit LogQuit(_p1Hash,_game.player1,_game.betAmount,
-            _game.player2,0);
-        _game.betAmount = 0;
-        _game.player1 = address(0);
-        _game.player2 = address(0);
-        _game.GameDeadline = 0;
-        games[_p1Hash] = _game;
+        address _player1 = games[_p1Hash].player1;
+        address _player2 = games[_p1Hash].player2;
+        uint _p2PlainMove = games[_p1Hash].P2PlainMove;
+        uint betAmount = games[_p1Hash].betAmount;
+        require(_player1==msg.sender,"You are not player 1");
+        require(block.number>games[_p1Hash].GameDeadline,"This game has not yet expired");
+        require(_p2PlainMove == 0,"Player 2 submited a move");
+        winnings[_player1] = winnings[_player1].add(betAmount);
+        emit LogQuit(_p1Hash,_player1,betAmount,_player2,_p2PlainMove);
+        games[_p1Hash].betAmount = 0;
+        games[_p1Hash].player1 = address(0);
+        games[_p1Hash].player2 = address(0);
+        games[_p1Hash].GameDeadline = 0;
     }
     /*
         player2 can cancel the game if:
@@ -158,20 +165,22 @@ contract RPC is Ownable, Pausable{
     */
     function quitPlayer2(bytes32 _p1Hash)
     public whenNotPaused ifAlive{
-        Game memory _game = games[_p1Hash];
-        require(_game.player2==msg.sender,
+        address _player1 = games[_p1Hash].player1;
+        address _player2 = games[_p1Hash].player2;
+        uint _p2PlainMove = games[_p1Hash].P2PlainMove;
+        uint betAmount = games[_p1Hash].betAmount;
+        require(_player2==msg.sender,
         "You are not player 2");
-        require(_game.P2PlainMove!=0,"Player 2 did not submit move");
-        require(block.number>_game.GameDeadline,"The game has not expired");
-        winnings[_game.player2] = winnings[_game.player2].add(_game.betAmount.mul(2));
-        emit LogQuit(_p1Hash,_game.player1,0,
-            _game.player2,_game.betAmount);
-        _game.betAmount = 0;
-        _game.player1 = address(0);
-        _game.player2 = address(0);
-        _game.P2PlainMove = 0;
-        _game.GameDeadline = 0;
-        games[_p1Hash] = _game;
+        require(_p2PlainMove!=0,"Player 2 did not submit move");
+        require(block.number>games[_p1Hash].GameDeadline,"The game has not expired");
+        winnings[_player2] = winnings[_player2].add(betAmount.mul(2));
+        emit LogQuit(_p1Hash,_player1,0,
+            _player2,betAmount);
+        games[_p1Hash].betAmount = 0;
+        games[_p1Hash].player1 = address(0);
+        games[_p1Hash].player2 = address(0);
+        games[_p1Hash].GameDeadline = 0;
+        games[_p1Hash].P2PlainMove = 0;
     }
     function withdraw()
     public whenNotPaused ifAlive{
